@@ -2,17 +2,33 @@ import streamlit as st
 import yfinance as yf
 import google.generativeai as genai
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
 
-# 🔑 Configure Gemini API (replace with st.secrets in production)
-genai.configure(api_key="AIzaSyCuQ8cH78R1VUKfdHqAZBrxgeBYKXgURlY")
+# ===========================
+# 🔑 CONFIG
+# ===========================
+st.set_page_config(page_title="📈 Smart Stock Analyzer", layout="wide")
+st.markdown(
+    """
+    <style>
+    .big-font { font-size:20px !important; font-weight: bold; }
+    .stMetric { background-color: #f8f9fa; border-radius: 12px; padding: 15px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# Replace with st.secrets in production
+genai.configure(api_key="YOUR_API_KEY")
 model = genai.GenerativeModel("gemini-2.5-pro")
 
 
-# 📌 Cache stock data for faster performance
+# ===========================
+# 📌 HELPERS
+# ===========================
 @st.cache_data
-def get_stock_data(ticker):
+def get_stock_data(ticker: str) -> dict:
     """Fetch stock data with fallback priority: NSE → BSE → Intl"""
     ticker = ticker.upper()
     suffixes = [".NS", ".BO", ""]
@@ -23,55 +39,53 @@ def get_stock_data(ticker):
         try:
             stock = yf.Ticker(ticker_symbol)
             info = stock.info
+
             if not info or "currentPrice" not in info:
                 continue
 
+            # Convert to serializable types
             return {
-                "symbol": ticker_symbol,
+                "symbol": str(ticker_symbol),
                 "exchange": exch,
-                "current_price": info.get("currentPrice"),
-                "high_52week": info.get("fiftyTwoWeekHigh"),
-                "low_52week": info.get("fiftyTwoWeekLow"),
-                "pe_ratio": info.get("trailingPE"),
-                "pb_ratio": info.get("priceToBook"),
-                "roe": info.get("returnOnEquity"),
-                "de_ratio": info.get("debtToEquity"),
-                "div_yield": info.get("dividendYield"),
-                "book_value": info.get("bookValue"),
-                "face_value": info.get("lastSplitFactor"),  # sometimes used as proxy
-                "eps_ttm": info.get("trailingEps"),
-                "market_cap": info.get("marketCap"),
-                "volume": info.get("volume"),
-                "currency": info.get("currency"),
+                "current_price": float(info.get("currentPrice", 0) or 0),
+                "high_52week": float(info.get("fiftyTwoWeekHigh", 0) or 0),
+                "low_52week": float(info.get("fiftyTwoWeekLow", 0) or 0),
+                "pe_ratio": float(info.get("trailingPE", 0) or 0),
+                "pb_ratio": float(info.get("priceToBook", 0) or 0),
+                "roe": float(info.get("returnOnEquity", 0) or 0),
+                "de_ratio": float(info.get("debtToEquity", 0) or 0),
+                "div_yield": float(info.get("dividendYield", 0) or 0),
+                "book_value": float(info.get("bookValue", 0) or 0),
+                "face_value": str(info.get("lastSplitFactor", "N/A")),
+                "eps_ttm": float(info.get("trailingEps", 0) or 0),
+                "market_cap": int(info.get("marketCap", 0) or 0),
+                "volume": int(info.get("volume", 0) or 0),
+                "currency": str(info.get("currency", "N/A")),
             }
         except Exception:
             continue
     return {"error": f"⚠️ Could not fetch data for {ticker}"}
 
 
-def analyze_stock_with_gemini(ticker, data):
+def analyze_stock_with_gemini(ticker: str, data: dict) -> str:
     """Ask Gemini to analyze stock fundamentals & give recommendation"""
     prompt = f"""
-    You are a professional stock analyst. Analyze {ticker} using the following data:
+    You are a financial advisor. Analyze {ticker} with this data:
 
-    - Current Price: {data.get('current_price')}
-    - 52 Week High: {data.get('high_52week')}
-    - 52 Week Low: {data.get('low_52week')}
-    - P/E Ratio: {data.get('pe_ratio')}
-    - P/B Ratio: {data.get('pb_ratio')}
-    - ROE: {data.get('roe')}
-    - Debt/Equity: {data.get('de_ratio')}
-    - Dividend Yield: {data.get('div_yield')}
-    - EPS (TTM): {data.get('eps_ttm')}
-    - Market Cap: {data.get('market_cap')}
-    - Volume: {data.get('volume')}
-    - Currency: {data.get('currency')}
+    Current Price: {data.get('current_price')}
+    52 Week High/Low: {data.get('high_52week')} / {data.get('low_52week')}
+    P/E Ratio: {data.get('pe_ratio')}, P/B: {data.get('pb_ratio')}
+    ROE: {data.get('roe')}, D/E: {data.get('de_ratio')}
+    Dividend Yield: {data.get('div_yield')}
+    EPS (TTM): {data.get('eps_ttm')}
+    Market Cap: {data.get('market_cap')}, Volume: {data.get('volume')}
 
     Provide:
-    1. A short, beginner-friendly summary of this stock.
-    2. Key opportunities and risks.
-    3. A clear recommendation (Buy, Hold, or Sell) with reasoning.
-    4. Long-term vs. short-term outlook.
+    1. Beginner-friendly overview 📘
+    2. Strengths ✅
+    3. Weaknesses ⚠️
+    4. Recommendation 🎯 (Buy / Hold / Sell) with reasons
+    5. Short vs Long-term outlook
     """
     try:
         response = model.generate_content(prompt)
@@ -79,134 +93,146 @@ def analyze_stock_with_gemini(ticker, data):
     except Exception as e:
         return f"❌ Gemini analysis failed: {e}"
 
+
 def plot_stock_chart(stock, period="6mo"):
-    """Interactive chart with candlesticks & moving averages"""
+    """Interactive candlestick chart with MAs & volume"""
     hist = stock.history(period=period)
     if hist.empty:
         return None
 
+    hist["MA20"] = hist["Close"].rolling(20).mean()
     hist["MA50"] = hist["Close"].rolling(50).mean()
     hist["MA200"] = hist["Close"].rolling(200).mean()
 
     fig = go.Figure()
 
+    # Price Candlestick
     fig.add_trace(go.Candlestick(
-        x=hist.index,
-        open=hist["Open"],
-        high=hist["High"],
-        low=hist["Low"],
-        close=hist["Close"],
-        name="Price"
+        x=hist.index, open=hist["Open"], high=hist["High"],
+        low=hist["Low"], close=hist["Close"], name="Price",
+        increasing_line_color="green", decreasing_line_color="red"
     ))
 
-    fig.add_trace(go.Scatter(x=hist.index, y=hist["MA50"], mode="lines", name="50D MA"))
-    fig.add_trace(go.Scatter(x=hist.index, y=hist["MA200"], mode="lines", name="200D MA"))
+    # Moving Averages
+    for ma, color in [("MA20", "blue"), ("MA50", "orange"), ("MA200", "purple")]:
+        fig.add_trace(go.Scatter(x=hist.index, y=hist[ma], mode="lines", name=ma, line=dict(color=color)))
+
+    # Volume
+    fig.add_trace(go.Bar(x=hist.index, y=hist["Volume"], name="Volume", yaxis="y2", opacity=0.3))
 
     fig.update_layout(
-        title="📉 Stock Price with Moving Averages",
-        yaxis=dict(title="Price"),
+        title="📉 Stock Trend with Volume",
         xaxis=dict(title="Date"),
-        template="plotly_white"
+        yaxis=dict(title="Price"),
+        yaxis2=dict(title="Volume", overlaying="y", side="right", showgrid=False),
+        template="plotly_white", height=600
     )
     return fig
 
 
 def plot_financials(stock):
-    """Try to plot revenue, profit, net worth if available"""
-    print("plot_financials :",stock)
+    """Revenue, Profit, Equity if available"""
     try:
-        # Safely get financials
-        fin = getattr(stock, "income_stmt", None)
-        bs = getattr(stock, "balance_sheet", None)
-
-        if fin is None or bs is None:
-            return None
-
+        fin = stock.income_stmt
+        bs = stock.balance_sheet
         if fin.empty or bs.empty:
             return None
 
-        fin = fin.T
-        bs = bs.T
-
         df = pd.DataFrame()
-
-        if "Total Revenue" in fin.columns:
-            df["Revenue"] = fin["Total Revenue"]
-        if "Net Income" in fin.columns:
-            df["Profit"] = fin["Net Income"]
-        if "Total Stockholder Equity" in bs.columns:
-            df["Net Worth"] = bs["Total Stockholder Equity"]
+        if "Total Revenue" in fin.index:
+            df["Revenue"] = fin.loc["Total Revenue"].T
+        if "Net Income" in fin.index:
+            df["Profit"] = fin.loc["Net Income"].T
+        if "Stockholders Equity" in bs.index:
+            df["Equity"] = bs.loc["Stockholders Equity"].T
 
         if df.empty:
             return None
 
         df.index = pd.to_datetime(df.index).year
-        fig = px.line(df, x=df.index, y=df.columns,
-                      title="📊 Financial Performance (Yearly)",
-                      markers=True)
+        fig = px.line(df, x=df.index, y=df.columns, markers=True,
+                      title="📊 Financial Performance (Yearly)")
         return fig
-
     except Exception as e:
         print("Financials error:", e)
         return None
 
-# 🎨 Streamlit UI
-st.set_page_config(page_title="Stock Buy/Sell Analyzer", layout="wide")
-st.title("📈 Stock Buy/Sell Analyzer")
 
-ticker = st.text_input("🔍 Enter Stock Ticker (e.g., AAPL, TSLA, INFY)", help="Supports NSE, BSE, and International tickers.")
+# ===========================
+# 🎨 UI
+# ===========================
+st.title("📈 Smart Stock Analyzer")
+ticker = st.text_input("🔍 Enter Stock Ticker", placeholder="e.g., AAPL, TSLA, INFY").upper()
 
-if ticker:
-    data = get_stock_data(ticker)
-
-    if "error" in data:
-        st.error(data["error"])
+if st.button("🚀 Analyze"):
+    if not ticker:
+        st.warning("⚠️ Please enter a stock ticker.")
     else:
-        st.success(f"✅ Found {ticker} on {data['exchange']}")
-        stock_obj = yf.Ticker(data["symbol"])
+        data = get_stock_data(ticker)
+        if "error" in data:
+            st.error(data["error"])
+        else:
+            st.success(f"✅ Found {ticker} on {data['exchange']}")
+            stock_obj = yf.Ticker(data["symbol"])
 
-        # Tabs
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Key Metrics", "📉 Charts", "📑 Financials", "🤖 AI Insights"])
+            tab1, tab2, tab3, tab4 = st.tabs(
+                ["📊 Key Metrics", "📉 Price Chart", "📑 Financials", "🤖 AI Insights"]
+            )
 
-        with tab1:
-            st.subheader("Key Metrics")
-            cols = st.columns(4)
+            # Key Metrics
+            with tab1:
+                st.markdown("### Company Snapshot")
+                cols = st.columns(4)
+                cols[0].metric("💵 Price", f"{data['current_price']} {data['currency']}")
+                cols[1].metric("📊 52W High", f"{data['high_52week']}")
+                cols[2].metric("📉 52W Low", f"{data['low_52week']}")
+                cols[3].metric("📈 P/E", data['pe_ratio'])
 
-            cols[0].metric("💵 Current Price", f"{data['current_price']} {data['currency']}")
-            cols[1].metric("📊 52W High", f"{data['high_52week']} {data['currency']}")
-            cols[2].metric("📉 52W Low", f"{data['low_52week']} {data['currency']}")
-            cols[3].metric("📈 P/E Ratio", data['pe_ratio'])
+                cols2 = st.columns(4)
+                cols2[0].metric("🏦 Market Cap", f"{data['market_cap']:,}")
+                cols2[1].metric("📊 Volume", f"{data['volume']:,}")
+                cols2[2].metric("📘 P/B", data.get("pb_ratio", "N/A"))
+                cols2[3].metric("📈 ROE", data.get("roe", "N/A"))
 
-            cols2 = st.columns(4)
-            cols2[0].metric("🏦 Market Cap", f"{data['market_cap']:,}")
-            cols2[1].metric("📊 Volume", f"{data['volume']:,}")
-            cols2[2].metric("📘 P/B Ratio", data.get("pb_ratio", "N/A"))
-            cols2[3].metric("📈 ROE", data.get("roe", "N/A"))
+                cols3 = st.columns(4)
+                cols3[0].metric("⚖️ D/E", data.get("de_ratio", "N/A"))
+                cols3[1].metric("💸 Div Yield", data.get("div_yield", "N/A"))
+                cols3[2].metric("📖 Book Value", data.get("book_value", "N/A"))
+                cols3[3].metric("💰 EPS (TTM)", data.get("eps_ttm", "N/A"))
 
-            cols3 = st.columns(4)
-            cols3[0].metric("⚖️ Debt/Equity", data.get("de_ratio", "N/A"))
-            cols3[1].metric("💸 Dividend Yield", data.get("div_yield", "N/A"))
-            cols3[2].metric("📖 Book Value", data.get("book_value", "N/A"))
-            cols3[3].metric("💰 EPS (TTM)", data.get("eps_ttm", "N/A"))
+            # Charts
+            with tab2:
+                st.markdown("### Price & Volume Trend")
+                fig = plot_stock_chart(stock_obj)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.markdown("""
+                            **Explanation:**  
+                            - The candlestick chart shows daily stock prices: green candles indicate price increases, red candles indicate decreases.  
+                            - Moving Averages (MA20, MA50, MA200) are shown as lines to indicate short, medium, and long-term trends.  
+                            - Volume bars at the bottom show trading activity; higher bars indicate more trades.
+                            """)
+                else:
+                    st.warning("⚠️ No historical data.")
 
-        with tab2:
-            st.subheader("Stock Price Chart (6 Months)")
-            fig = plot_stock_chart(stock_obj)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("⚠️ No historical data available.")
+            # Financials
+            with tab3:
+                st.markdown("### Annual Performance")
+                fin_fig = plot_financials(stock_obj)
+                if fin_fig:
+                    st.plotly_chart(fin_fig, use_container_width=True)
+                    st.markdown("""
+                            **Explanation:**  
+                            - **Revenue**: Total income generated by the company each year.  
+                            - **Profit (Net Income)**: Money left after all expenses are paid.  
+                            - **Equity (Net Worth)**: Value of the company owned by shareholders.  
+                            - Trends help investors identify growth, profitability, and financial health over time.
+                            """)
+                else:
+                    st.warning("⚠️ Financial data unavailable.")
 
-        with tab3:
-            st.subheader("📑 Financial Performance")
-            fin_fig = plot_financials(stock_obj)
-            print("tab3: ",fin_fig)
-            if fin_fig:
-                st.plotly_chart(fin_fig, use_container_width=True)
-            else:
-                st.warning("⚠️ Financial data not available for this stock.")
-
-        with tab4:
-            st.subheader("AI-Powered Investment Analysis")
-            analysis = analyze_stock_with_gemini(ticker, data)
-            st.write(analysis)
+            # AI Insights
+            with tab4:
+                st.markdown("### AI-Powered Investment Insights")
+                analysis = analyze_stock_with_gemini(ticker, data)
+                st.write(analysis)
