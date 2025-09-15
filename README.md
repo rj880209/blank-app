@@ -1,4 +1,4 @@
-# 🎈 Blank app template
+# 🎈This AI AGENT provide the analysis of stock to buy/sell/hold 
 
 A simple Streamlit app template for you to modify!
 
